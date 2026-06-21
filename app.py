@@ -22,6 +22,13 @@ def install_playwright_browsers():
 
 install_playwright_browsers()
 
+# Initialize session state for tracking across runs
+if "combined_df" not in st.session_state:
+    st.session_state.combined_df = None
+if "new_df" not in st.session_state:
+    st.session_state.new_df = None
+if "scrape_success" not in st.session_state:
+    st.session_state.scrape_success = False
 
 # Page Configuration
 st.set_page_config(
@@ -116,6 +123,11 @@ if submit_button:
     elif not username or not password:
         st.error("⚠️ 아이디와 비밀번호를 모두 입력해 주세요.")
     else:
+        # Reset state on new run
+        st.session_state.combined_df = None
+        st.session_state.new_df = None
+        st.session_state.scrape_success = False
+        
         # 2. Execution Container
         st.subheader("⚙️ 수집 콘솔 로그")
         
@@ -158,33 +170,42 @@ if submit_button:
                 combined_df.sort_values(by=["date", "product_name", "keyword"], ascending=[True, True, True], inplace=True)
                 combined_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
                 
+                # Save results to session state
+                st.session_state.combined_df = combined_df
+                st.session_state.new_df = new_df
+                st.session_state.scrape_success = True
+                
                 # Finish status
                 status.update(label="수집 및 정리가 완료되었습니다!", state="complete")
-                st.success("🎉 수집 및 정리가 성공적으로 완료되었습니다!")
-                
-                # Convert DataFrame to bytes for download button
-                csv_bytes = combined_df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-                
-                # Download Button
-                st.download_button(
-                    label="📥 CSV 파일 다운로드",
-                    data=csv_bytes,
-                    file_name="rankings.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-                
-                # Data Preview Section
-                st.markdown("<br>", unsafe_allow_html=True)
-                st.subheader("📊 금일 수집된 순위 요약")
-                st.dataframe(
-                    new_df[["product_name", "keyword", "rank"]],
-                    use_container_width=True,
-                    hide_index=True
-                )
                 
             except Exception as e:
                 error_msg = str(e)
                 st.write(f"❌ Scraper task failed: {error_msg}")
                 status.update(label="수집 실패", state="error")
                 st.error(f"🚨 오류 발생: {error_msg}")
+
+# 3. Display results if scrape was successful
+if st.session_state.scrape_success and st.session_state.combined_df is not None:
+    st.success("🎉 수집 및 정리가 성공적으로 완료되었습니다!")
+    
+    # Convert DataFrame to bytes for download button
+    csv_bytes = st.session_state.combined_df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+    
+    # Download Button
+    st.download_button(
+        label="📥 CSV 파일 다운로드",
+        data=csv_bytes,
+        file_name="rankings.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+    
+    # Data Preview Section
+    if st.session_state.new_df is not None:
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.subheader("📊 금일 수집된 순위 요약")
+        st.dataframe(
+            st.session_state.new_df[["product_name", "keyword", "rank"]],
+            use_container_width=True,
+            hide_index=True
+        )
