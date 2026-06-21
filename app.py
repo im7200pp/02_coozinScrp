@@ -96,7 +96,7 @@ with st.form("scraper_form"):
 
 if submit_button:
     # 1. Validation
-    correct_key = os.getenv("SCRAPER_ACCESS_KEY", "Coozin123##")
+    correct_key = os.getenv("SCRAPER_ACCESS_KEY", "Coozin321!!")
     if access_key != correct_key:
         st.error("🔒 유효하지 않은 액세스 키입니다. 다시 입력해 주세요.")
     elif not username or not password:
