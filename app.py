@@ -9,6 +9,20 @@ from scraper import scrape_itemscout_rankings
 # Load environment variables (useful for local development credentials)
 load_dotenv()
 
+# Automatic Playwright browser installation on Streamlit Community Cloud
+@st.cache_resource
+def install_playwright_browsers():
+    import subprocess
+    import sys
+    try:
+        # Run playwright installation using the current python executable
+        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+    except Exception as e:
+        st.error(f"Failed to install Playwright browser: {e}")
+
+install_playwright_browsers()
+
+
 # Page Configuration
 st.set_page_config(
     page_title="ItemScout Rank Tracker",
