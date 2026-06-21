@@ -12,6 +12,7 @@ wheels/
 # Environment variables / Credentials
 .env
 .env.*
+!.env.example
 
 # macOS files
 .DS_Store
