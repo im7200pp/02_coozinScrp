@@ -1,6 +1,7 @@
 import asyncio
 import os
 import re
+from datetime import datetime
 from playwright.async_api import async_playwright
 
 async def scrape_itemscout_rankings(username, password, progress_callback=None):
@@ -60,96 +61,192 @@ async def scrape_itemscout_rankings(username, password, progress_callback=None):
             await page.goto("https://itemscout.io/tracking/daily")
             await page.wait_for_timeout(5000)
             
-            # Parse product card details
-            await log_progress("Parsing keyword rankings from daily tracker...")
-            data = await page.evaluate("""() => {
-                const results = [];
-                const elements = Array.from(document.querySelectorAll('*'));
+            # Dismiss popup if it exists
+            popup_dismiss = page.locator("text=하루간 보지 않기")
+            if await popup_dismiss.is_visible():
+                await log_progress("Popup detected. Dismissing popup...")
+                await popup_dismiss.click()
+                await page.wait_for_timeout(1000)
                 
-                elements.forEach(el => {
-                    // Leaf card detection
-                    if (el.innerText && el.innerText.includes('(ID ') && el.innerText.includes('판매가')) {
-                        const childrenWithId = Array.from(el.querySelectorAll('*')).filter(child => child.innerText && child.innerText.includes('(ID ') && child.innerText.includes('판매가'));
-                        if (childrenWithId.length === 0) {
-                            
-                            // Skip sample products
-                            if (el.innerText.includes("예시상품")) {
-                                return;
-                            }
-                            
-                            // Extract mall name
-                            const mallEl = el.querySelector('.mr-1.whitespace-nowrap.text-sm.font-bold.text-dark-black');
-                            const mallName = mallEl ? mallEl.innerText.trim() : "";
-                            
-                            // Extract product name
-                            const nameEl = el.querySelector('.overflow-hidden.text-ellipsis.whitespace-nowrap.text-sm.text-dark-black');
-                            const productName = nameEl ? nameEl.innerText.trim() : "";
-                            
-                            // Extract product ID
-                            const idMatch = el.innerText.match(/\\(ID\\s*(\\d+)\\)/);
-                            const productId = idMatch ? idMatch[1] : "";
-                            
-                            // Parse keywords and rankings
-                            const keywords = [];
-                            const allElems = Array.from(el.querySelectorAll('*'));
-                            let startParsing = false;
-                            
-                            for (let i = 0; i < allElems.length; i++) {
-                                const subEl = allElems[i];
-                                if (subEl.innerText && subEl.innerText.trim() === '변동') {
-                                    startParsing = true;
-                                    continue;
-                                }
-                                
-                                if (startParsing) {
-                                    if (subEl.tagName === 'SPAN' && subEl.classList.contains('font-bold')) {
-                                        const keywordName = subEl.innerText.trim();
-                                        
-                                        // Search for its rank in next elements
-                                        let rank = "-";
-                                        for (let j = i + 1; j < Math.min(i + 5, allElems.length); j++) {
-                                            const nextEl = allElems[j];
-                                            const nextText = nextEl.innerText.trim();
-                                            if (!nextText) continue;
-                                            
-                                            if (nextEl.tagName === 'SPAN' && nextEl.classList.contains('font-bold')) {
-                                                break;
-                                            }
-                                            if (nextText.endsWith('위') || nextText === 'OUT' || nextText === '-') {
-                                                rank = nextText;
-                                                break;
-                                            }
-                                        }
-                                        keywords.push({ keyword: keywordName, rank: rank });
-                                    }
-                                }
-                            }
-                            
-                            results.push({
-                                mallName: mallName,
-                                productName: productName,
-                                productId: productId,
-                                keywords: keywords
-                            });
-                        }
+            # Get list of products with their detail links
+            await log_progress("Extracting tracked product links...")
+            products = await page.evaluate("""() => {
+                const results = [];
+                const cardElements = Array.from(document.querySelectorAll('*')).filter(el => {
+                    return el.innerText && el.innerText.includes('(ID ') && el.innerText.includes('판매가');
+                });
+                
+                const leafCards = [];
+                cardElements.forEach(el => {
+                    const children = Array.from(el.querySelectorAll('*')).filter(c => c.innerText && c.innerText.includes('(ID ') && c.innerText.includes('판매가'));
+                    if (children.length === 0 && !el.innerText.includes("예시상품")) {
+                        leafCards.push(el);
+                    }
+                });
+                
+                leafCards.forEach(el => {
+                    // Extract mall name
+                    const mallEl = el.querySelector('.mr-1.whitespace-nowrap.text-sm.font-bold.text-dark-black');
+                    const mallName = mallEl ? mallEl.innerText.trim() : "";
+                    
+                    // Extract product name
+                    const nameEl = el.querySelector('.overflow-hidden.text-ellipsis.whitespace-nowrap.text-sm.text-dark-black');
+                    const productName = nameEl ? nameEl.innerText.trim() : "";
+                    
+                    // Extract product ID
+                    const idMatch = el.innerText.match(/\\(ID\\s*(\\d+)\\)/);
+                    const productId = idMatch ? idMatch[1] : "";
+                    
+                    // Extract detail link
+                    const linkEl = el.closest('a') || el.querySelector('a');
+                    const detailHref = linkEl ? linkEl.getAttribute('href') : "";
+                    
+                    if (detailHref) {
+                        results.push({
+                            mallName: mallName,
+                            productName: productName,
+                            productId: productId,
+                            detailUrl: detailHref.startsWith('http') ? detailHref : 'https://itemscout.io' + detailHref
+                        });
                     }
                 });
                 return results;
             }""")
             
-            # Re-format raw data to flat rows
-            for item in data:
-                for kw in item['keywords']:
-                    results.append({
-                        "mall_name": item['mallName'],
-                        "product_name": item['productName'],
-                        "product_id": item['productId'],
-                        "keyword": kw['keyword'],
-                        "rank": kw['rank']
-                    })
+            await log_progress(f"Found {len(products)} products to scrape detail pages for.")
             
-            await log_progress(f"Successfully scraped {len(results)} keyword ranking entries.")
+            # Scrape each product detail page
+            for idx, prod in enumerate(products):
+                await log_progress(f"Scraping product {idx+1}/{len(products)}: {prod['productName']}")
+                try:
+                    await page.goto(prod['detailUrl'])
+                    await page.wait_for_timeout(6000) # Wait for table to load
                     
+                    # Parse daily ranking table from detail page
+                    table_data = await page.evaluate("""() => {
+                        const headerTable = document.querySelector('table[class*="header-table"]');
+                        const bodyTable = document.querySelector('table[class*="body-table"]');
+                        if (!headerTable || !bodyTable) return null;
+                        
+                        const ths = Array.from(headerTable.querySelectorAll('th'));
+                        const headers = ths.map(th => th.innerText.trim()).filter(txt => txt !== "");
+                        
+                        const trs = Array.from(bodyTable.querySelectorAll('tr'));
+                        const rows = [];
+                        
+                        trs.forEach(tr => {
+                            const tds = Array.from(tr.querySelectorAll('td'));
+                            if (tds.length === 0) return;
+                            
+                            // Col 0: Keyword and Volume
+                            const col0 = tds[0];
+                            const keywordSpan = col0.querySelector('.font-medium') || col0.querySelector('span');
+                            let keyword = keywordSpan ? keywordSpan.innerText.trim() : col0.innerText.trim();
+                            
+                            const volumeSpan = col0.querySelector('.text-base-40') || col0.querySelector('.text-xs');
+                            let volume = volumeSpan ? volumeSpan.innerText.trim() : "";
+                            
+                            if (volume && keyword.endsWith(volume)) {
+                                keyword = keyword.substring(0, keyword.length - volume.length).trim();
+                            }
+                            
+                            if (!keyword) return;
+                            
+                            const ranks = [];
+                            for (let j = 1; j < Math.min(tds.length, headers.length + 1); j++) {
+                                const col = tds[j];
+                                
+                                // Rank
+                                const rankSpan = col.querySelector('.font-bold');
+                                let rank = rankSpan ? rankSpan.innerText.trim() : col.innerText.trim().split('-')[0].trim();
+                                
+                                // Page Info
+                                const pageSpan = col.querySelector('.text-base-40');
+                                let pageInfo = pageSpan ? pageSpan.innerText.trim() : "";
+                                if (pageInfo.startsWith('-')) {
+                                    pageInfo = pageInfo.substring(1).trim();
+                                }
+                                
+                                // Change Direction & Value
+                                let changeDir = "none";
+                                let changeVal = "0";
+                                
+                                const errorSpan = col.querySelector('.text-error');
+                                const blueSpan = col.querySelector('.text-blue');
+                                
+                                if (errorSpan) {
+                                    changeDir = "down";
+                                    const valSpan = col.querySelector('.font-normal');
+                                    changeVal = valSpan ? valSpan.innerText.replace(/[^0-9]/g, '').trim() : "0";
+                                } else if (blueSpan) {
+                                    changeDir = "up";
+                                    const valSpan = col.querySelector('.font-normal');
+                                    changeVal = valSpan ? valSpan.innerText.replace(/[^0-9]/g, '').trim() : "0";
+                                }
+                                
+                                ranks.push({
+                                    rank: rank || "-",
+                                    pageInfo: pageInfo || "-",
+                                    changeDir: changeDir,
+                                    changeVal: changeVal || "0"
+                                });
+                            }
+                            
+                            rows.push({
+                                keyword: keyword,
+                                volume: volume,
+                                ranks: ranks
+                            });
+                        });
+                        
+                        return { headers: headers, rows: rows };
+                    }""")
+                    
+                    if table_data and table_data['headers'] and table_data['rows']:
+                        headers = table_data['headers']
+                        for row in table_data['rows']:
+                            for col_idx, rank_info in enumerate(row['ranks']):
+                                if col_idx >= len(headers):
+                                    break
+                                raw_header = headers[col_idx]
+                                clean_header = raw_header.replace('\uf1fc', '').replace('', '').strip()
+                                
+                                # Resolve date
+                                resolved_date = None
+                                match = re.search(r'(\d{2})\.(\d{2})', clean_header)
+                                if match:
+                                    month = int(match.group(1))
+                                    day = int(match.group(2))
+                                    now = datetime.now()
+                                    year = now.year
+                                    if now.month == 1 and month == 12:
+                                        year -= 1
+                                    elif now.month == 12 and month == 1:
+                                        year += 1
+                                    resolved_date = f"{year:04d}-{month:02d}-{day:02d}"
+                                else:
+                                    resolved_date = datetime.now().strftime("%Y-%m-%d")
+                                    
+                                results.append({
+                                    "date": resolved_date,
+                                    "mall_name": prod['mallName'],
+                                    "product_name": prod['productName'],
+                                    "product_id": prod['productId'],
+                                    "keyword": row['keyword'],
+                                    "search_volume": row['volume'],
+                                    "rank": rank_info['rank'],
+                                    "page_info": rank_info['pageInfo'],
+                                    "change_direction": rank_info['changeDir'],
+                                    "change_value": rank_info['changeVal']
+                                })
+                        await log_progress(f"Successfully scraped rankings for {len(table_data['rows'])} keywords from detail page.")
+                    else:
+                        await log_progress(f"No rank table data found on detail page for {prod['productName']}.")
+                except Exception as detail_err:
+                    await log_progress(f"Error scraping detail page for {prod['productName']}: {detail_err}")
+            
+            await log_progress(f"Successfully scraped total of {len(results)} daily rank records.")
+            
         except Exception as e:
             await log_progress(f"Error during scraping: {e}")
             raise e

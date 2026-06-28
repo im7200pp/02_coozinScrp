@@ -4,6 +4,7 @@ from datetime import datetime
 import pandas as pd
 from dotenv import load_dotenv
 from scraper import scrape_itemscout_rankings
+from utils import save_rankings_data
 
 async def main():
     # Load environment variables
@@ -26,44 +27,23 @@ async def main():
             print("[Warning] No data was scraped from ItemScout. Check if any items are registered.")
             return
             
-        # Get current date
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        
         # Convert to DataFrame
         new_df = pd.DataFrame(rows)
-        new_df["product_id"] = new_df["product_id"].astype(str)
-        new_df.insert(0, "date", today_str)
         
-        # Output directory and file path
-        output_dir = "data"
-        os.makedirs(output_dir, exist_ok=True)
-        csv_path = os.path.join(output_dir, "rankings.csv")
+        # Save rankings using utility function (handles CSV and Excel generation)
+        save_rankings_data(new_df)
+        print(f"[Success] Successfully processed {len(new_df)} rank records.")
         
-        # Append logic with duplicate prevention
-        if os.path.exists(csv_path):
-            print(f"[Info] Found existing file: {csv_path}. Appending new data...")
-            existing_df = pd.read_csv(csv_path, dtype={"product_id": str})
-            
-            # Combine existing and new data
-            combined_df = pd.concat([existing_df, new_df], ignore_index=True)
-            
-            # Drop duplicates (if run multiple times on the same date, keep the latest run)
-            # Duplicate definition: same date, same product_id, same keyword
-            combined_df.drop_duplicates(subset=["date", "product_id", "keyword"], keep="last", inplace=True)
-        else:
-            print(f"[Info] Creating new file: {csv_path}...")
-            combined_df = new_df
-            
-        # Sort by date and product name for readability
-        combined_df.sort_values(by=["date", "product_name", "keyword"], ascending=[True, True, True], inplace=True)
-        
-        # Save to CSV
-        combined_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
-        print(f"[Success] Successfully saved {len(new_df)} rows to {csv_path}.")
-        
-        # Print summary
+        # Print summary of today's ranks
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_df = new_df[new_df["date"] == today_str] if "date" in new_df.columns else new_df
         print("\n--- Summary of Scraped Rankings ---")
-        print(new_df[["product_name", "keyword", "rank"]].to_string(index=False))
+        if not today_df.empty and "product_name" in today_df.columns:
+            print(today_df[["product_name", "keyword", "rank"]].to_string(index=False))
+        elif not new_df.empty and "product_name" in new_df.columns:
+            print(new_df[["product_name", "keyword", "rank"]].to_string(index=False))
+        else:
+            print("No new data available for summary.")
         print("-----------------------------------")
         
     except Exception as e:

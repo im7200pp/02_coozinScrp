@@ -5,6 +5,7 @@ import pandas as pd
 from datetime import datetime
 from dotenv import load_dotenv
 from scraper import scrape_itemscout_rankings
+from utils import save_rankings_data
 
 # Load environment variables (useful for local development credentials)
 load_dotenv()
@@ -144,31 +145,14 @@ if submit_button:
                 if not rows:
                     raise ValueError("No scraper items returned. Ensure you have active keywords registered in your Daily Tracker.")
                 
-                # Progress logging for CSV collation
-                st.write("🔹 Compiling results to CSV format...")
-                status.update(label="Compiling results to CSV format...")
+                # Progress logging for data collation
+                st.write("🔹 Compiling results to CSV and Excel formats...")
+                status.update(label="Compiling results to CSV and Excel formats...")
                 
-                today_str = datetime.now().strftime("%Y-%m-%d")
                 new_df = pd.DataFrame(rows)
-                new_df["product_id"] = new_df["product_id"].astype(str)
-                new_df.insert(0, "date", today_str)
                 
-                # Check for existing data and merge
-                output_dir = "data"
-                os.makedirs(output_dir, exist_ok=True)
-                csv_path = os.path.join(output_dir, "rankings.csv")
-                
-                if os.path.exists(csv_path):
-                    st.write(f"🔹 Reading existing rankings log from {csv_path}...")
-                    existing_df = pd.read_csv(csv_path, dtype={"product_id": str})
-                    combined_df = pd.concat([existing_df, new_df], ignore_index=True)
-                    combined_df.drop_duplicates(subset=["date", "product_id", "keyword"], keep="last", inplace=True)
-                else:
-                    st.write("🔹 Creating new rankings log...")
-                    combined_df = new_df
-                    
-                combined_df.sort_values(by=["date", "product_name", "keyword"], ascending=[True, True, True], inplace=True)
-                combined_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+                # Save and merge data
+                combined_df = save_rankings_data(new_df)
                 
                 # Save results to session state
                 st.session_state.combined_df = combined_df
@@ -188,12 +172,28 @@ if submit_button:
 if st.session_state.scrape_success and st.session_state.combined_df is not None:
     st.success("🎉 수집 및 정리가 성공적으로 완료되었습니다!")
     
-    # Convert DataFrame to bytes for download button
-    csv_bytes = st.session_state.combined_df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+    # Columns for download buttons
+    col1, col2 = st.columns(2)
     
-    # Download Button
-    st.download_button(
-        label="📥 CSV 파일 다운로드",
+    # Excel Download
+    try:
+        with open("data/rankings.xlsx", "rb") as f:
+            excel_bytes = f.read()
+        col1.download_button(
+            label="📥 일별 순위 현황 (Excel) 다운로드",
+            data=excel_bytes,
+            file_name="rankings.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            type="primary"
+        )
+    except Exception as e:
+        col1.error("Excel 파일을 불러오지 못했습니다.")
+        
+    # CSV Download
+    csv_bytes = st.session_state.combined_df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+    col2.download_button(
+        label="📥 상세 데이터 (CSV) 다운로드",
         data=csv_bytes,
         file_name="rankings.csv",
         mime="text/csv",
@@ -204,8 +204,30 @@ if st.session_state.scrape_success and st.session_state.combined_df is not None:
     if st.session_state.new_df is not None:
         st.markdown("<br>", unsafe_allow_html=True)
         st.subheader("📊 금일 수집된 순위 요약")
+        preview_df = st.session_state.new_df.copy()
+        
+        # Select preview columns (safe check)
+        display_cols = ["date", "product_name", "keyword", "rank"]
+        if "page_info" in preview_df.columns:
+            display_cols.append("page_info")
+        if "change_direction" in preview_df.columns:
+            # Create a user friendly change text column
+            def make_change_text(row):
+                d = str(row['change_direction'])
+                try:
+                    v = int(row['change_value'])
+                except:
+                    v = 0
+                if d == 'up' and v > 0:
+                    return f"▲{v}"
+                elif d == 'down' and v > 0:
+                    return f"▼{v}"
+                return "-"
+            preview_df["변동"] = preview_df.apply(make_change_text, axis=1)
+            display_cols.append("변동")
+            
         st.dataframe(
-            st.session_state.new_df[["product_name", "keyword", "rank"]],
+            preview_df[display_cols],
             use_container_width=True,
             hide_index=True
         )
